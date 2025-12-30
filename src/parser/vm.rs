@@ -11,55 +11,47 @@ pub struct ScriptVisitor {
 }
 
 impl<'a> Visit<'a> for ScriptVisitor {
-    // fn visit_computed_member_expression(&mut self, it: &ComputedMemberExpression<'a>) {
-    //     if let Expression::StringLiteral(literal) = &it.object
-    //         && let Expression::StringLiteral(literal2) = &it.expression
-    //         && literal.value.len() == 65
-    //         && literal2.value == "charAt"
-    //     {
-    //         self.compressor_charset = Some(literal.value.to_string());
-    //     }
-    // 
-    //     walk_computed_member_expression(self, it);
-    // }
-    
     fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        // On vérifie que c'est bien un appel de fonction standard
         if !it.callee.is_identifier_reference() {
             walk_call_expression(self, it);
             return;
         }
 
-        if it.arguments.len() != 1 {
+        // RELAXED: On accepte les fonctions avec plus d'un argument (ex: decrypt(str, key))
+        if it.arguments.is_empty() {
             walk_call_expression(self, it);
             return;
         }
 
-        let callee = it.callee_name().unwrap();
         let first_arg = it.arguments.get(0).unwrap();
 
+        // On vérifie que le premier argument est une String Literal
         if !first_arg.is_expression() || !first_arg.as_expression().unwrap().is_string_literal() {
             walk_call_expression(self, it);
             return;
         }
 
         let first_arg_str = match first_arg.as_expression().unwrap() {
-            Expression::StringLiteral(str) => str,
-            _ => panic!("expected a string literal"),
-        }
-            .value
-            .as_str();
+            Expression::StringLiteral(str) => str.value.as_str(),
+            _ => return, // Safety: on ignore si ce n'est pas une string simple
+        };
 
-        if first_arg_str.len() < 300 {
-            walk_call_expression(self, it);
-            return;
-        }
+        // HEURISTIQUE DE TAILLE :
+        // Le bytecode initial fait généralement entre 300 et 800 caractères.
+        // Le main bytecode fait plus de 1000 caractères.
+        
+        let len = first_arg_str.len();
 
-        match callee {
-            "atob" => self.initial_vm = Some(first_arg_str.to_string()),
-            _ => {
-                if first_arg_str.len() >= 1000 {
-                    self.main_vm = Some(first_arg_str.to_string())
-                }
+        if len > 300 {
+            if len >= 1000 {
+                // C'est probablement le Main VM Payload
+                self.main_vm = Some(first_arg_str.to_string());
+            } else if self.initial_vm.is_none() {
+                // C'est probablement l'Initial VM Payload (anciennement atob)
+                // On prend le premier candidat valide qu'on trouve.
+                // On ne vérifie PLUS le nom de la fonction (callee) car il change souvent.
+                self.initial_vm = Some(first_arg_str.to_string());
             }
         }
 
@@ -67,10 +59,12 @@ impl<'a> Visit<'a> for ScriptVisitor {
     }
 
     fn visit_string_literal(&mut self, it: &StringLiteral<'a>) {
+        // Détection du charset du compresseur LZ (inchangée)
         if it.value.len() == 65 && it.value.contains("$") && it.value.contains("-") && it.value.contains("+") {
             self.compressor_charset = Some(it.value.to_string());
         }
         
+        // Détection de l'argument d'init (inchangée)
         if it.value.len() > 20
             && it.value.starts_with("/")
             && it.value.ends_with("/")

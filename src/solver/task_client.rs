@@ -29,12 +29,14 @@ impl TaskClient {
         referrer: String,
         headers: Headers,
     ) -> Result<TaskClient, anyhow::Error> {
+        eprintln!("[TaskClient::new] referrer={}", referrer);
         let emulation = EmulationOption::builder()
             .emulation(Chrome136)
             .emulation_os(Windows)
             .build();
 
         let client = build_client(emulation, None, headers)?;
+        eprintln!("[TaskClient::new] client built");
         Ok(Self {
             host: get_referrer_host(referrer.as_str())?,
             client,
@@ -50,7 +52,7 @@ impl TaskClient {
         site_key: &str,
         c_ray: &str,
     ) -> Option<String> {
-        eprintln!("🔍 Attempting to extract/generate cH...");
+        eprintln!("🔍 Attempting to extract/generate cH... (extract_or_generate_ch) solve_url={} site_key={} c_ray={}", solve_url, site_key, c_ray);
         
         // Method 1: Check if cH is in the URL path
         // Some Turnstile versions embed it as /ch/VALUE/
@@ -92,6 +94,7 @@ impl TaskClient {
         solve_url: &str,
         c_ray: &str,
     ) -> Result<String, anyhow::Error> {
+        eprintln!("[get_challenge_params] entry solve_url={} c_ray={}", solve_url, c_ray);
         // Try to fetch challenge parameters from a known endpoint
         // Cloudflare sometimes has an endpoint like:
         // /cdn-cgi/challenge-platform/h/b/g/challenge/params?ray=...
@@ -119,13 +122,14 @@ impl TaskClient {
             {
                 Ok(response) if response.status().is_success() => {
                     let text = response.text().await?;
-                    eprintln!("✅ Got response from {}", endpoint);
-                    eprintln!("Response: {}", &text[..text.len().min(500)]);
+                    eprintln!("[get_challenge_params] ✅ Got response from {} ({} bytes)", endpoint, text.len());
+                    eprintln!("Response (trunc): {}", &text[..text.len().min(500)]);
                     
                     // Try to extract cH from JSON response
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
                         if let Some(ch) = json.get("ch").or_else(|| json.get("cH")) {
                             if let Some(ch_str) = ch.as_str() {
+                                eprintln!("[get_challenge_params] extracted ch from json: {}", ch_str);
                                 return Ok(ch_str.to_string());
                             }
                         }
@@ -135,12 +139,13 @@ impl TaskClient {
                     let ch_re = Regex::new(r#"["']ch["']\s*:\s*["']([^"']+)["']"#)?;
                     if let Some(cap) = ch_re.captures(&text) {
                         if let Some(m) = cap.get(1) {
+                            eprintln!("[get_challenge_params] extracted ch from regex: {}", m.as_str());
                             return Ok(m.as_str().to_string());
                         }
                     }
                 }
-                Ok(_) => eprintln!("❌ Endpoint returned non-success status"),
-                Err(e) => eprintln!("❌ Error calling endpoint: {}", e),
+                Ok(_) => eprintln!("[get_challenge_params] ❌ Endpoint returned non-success status: {}", endpoint),
+                Err(e) => eprintln!("[get_challenge_params] ❌ Error calling endpoint {}: {}", endpoint, e),
             }
         }
         
@@ -148,6 +153,7 @@ impl TaskClient {
     }
 
     pub(crate) async fn get_api(&mut self) -> Result<VersionInfo, anyhow::Error> {
+        eprintln!("[get_api] returning default branch/version");
         self.branch = "b".to_string();
         Ok(VersionInfo {
             branch: "b".to_string(),
@@ -159,6 +165,7 @@ impl TaskClient {
         &mut self,
         zone: &str,
     ) -> Result<PerformanceEntry, anyhow::Error> {
+        eprintln!("[get_random_image] zone={}", zone);
         self.set_get_headers_order();
         let url = format!(
             "https://{}/cdn-cgi/challenge-platform/h/{}/cmg/1",
@@ -180,6 +187,8 @@ impl TaskClient {
             .send()
             .await?;
 
+        eprintln!("[get_random_image] response status={}", response.status());
+
         if response.status() != 200 {
             bail!(
                 "received invalid status code when getting random image: {}",
@@ -187,6 +196,7 @@ impl TaskClient {
             );
         }
 
+        eprintln!("[get_random_image] success, building PerformanceEntry");
         Ok(PerformanceEntry::Resource(PerformanceResourceEntry {
             r#type: "r".to_string(),
             time_taken: imprecise_performance_now_value(510.0),
@@ -199,6 +209,7 @@ impl TaskClient {
     }
 
     pub(crate) async fn get_timezone(&mut self) -> Result<String, anyhow::Error> {
+        eprintln!("[get_timezone] returning static timezone");
         // Return static timezone to avoid DNS issues
         Ok("America/New_York".to_string())
     }
@@ -212,6 +223,7 @@ pub(crate) async fn initialize_solve(
     &mut self,
     site_key: &str,
 ) -> Result<(String, String, CloudflareChallengeOptions), anyhow::Error> {
+    eprintln!("[initialize_solve] entry site_key={} branch={} host={}", site_key, self.branch, self.host);
     self.set_get_html_headers_order();
     let solve_url = generate_solve_url(self.branch.as_str(), site_key);
 
@@ -262,6 +274,8 @@ pub(crate) async fn initialize_solve(
         .map_err(|e| anyhow::anyhow!("Decompression failed: {}", e))?;
     let text = String::from_utf8(decompressed)?;
 
+    eprintln!("[initialize_solve] fetched HTML ({} bytes)", text.len());
+
     // Save for debugging
     #[cfg(debug_assertions)]
     {
@@ -299,6 +313,7 @@ pub(crate) async fn initialize_solve(
     // Set zone if not found
     if challenge.zone.is_empty() {
         challenge.zone = "challenges.cloudflare.com".to_string();
+        eprintln!("[initialize_solve] zone not found, defaulting to {}", challenge.zone);
     }
 
     // Try to get cH from orchestrate (but don't fail if we can't)
@@ -309,7 +324,7 @@ pub(crate) async fn initialize_solve(
         
         match self.get_orchestrate(&challenge.zone, &challenge.c_ray).await {
             Ok((_perf, orchestrate_text)) => {
-                eprintln!("✅ Got orchestrate response");
+                eprintln!("✅ Got orchestrate response ({} bytes)", orchestrate_text.len());
                 
                 #[cfg(debug_assertions)]
                 {
@@ -355,6 +370,7 @@ pub(crate) async fn initialize_solve(
     }
 
     self.solve_url = Some(solve_url.clone());
+    eprintln!("[initialize_solve] exit returning (solve_url, html_len={}, challenge)", text.len());
     Ok((solve_url, text, challenge))
 }
 
@@ -363,6 +379,7 @@ pub(crate) async fn initialize_solve(
         zone: &str,
         c_ray: &str,
     ) -> Result<(PerformanceEntry, String), anyhow::Error> {
+        eprintln!("[get_orchestrate] entry zone={} c_ray={}", zone, c_ray);
         self.set_get_headers_order();
         let t = Instant::now();
 
@@ -370,6 +387,8 @@ pub(crate) async fn initialize_solve(
             "https://{}/cdn-cgi/challenge-platform/h/{}/orchestrate/chl_api/v1?ray={}&lang=auto",
             zone, self.branch, c_ray
         );
+
+        eprintln!("[get_orchestrate] calling url={}", url);
 
         let response = self
             .client
@@ -384,6 +403,8 @@ pub(crate) async fn initialize_solve(
             .send()
             .await?;
 
+        eprintln!("[get_orchestrate] response status={}", response.status());
+
         let content_encoding = response
             .headers()
             .get("Content-Encoding")
@@ -391,9 +412,12 @@ pub(crate) async fn initialize_solve(
             .unwrap_or_else(|| HeaderValue::from_str("").unwrap())
             .to_str()?
             .to_string();
+        eprintln!("[get_orchestrate] content_encoding={}", content_encoding);
         let bytes = response.bytes().await?;
+        eprintln!("[get_orchestrate] bytes.len={}", bytes.len());
         let decompressed = decompress_body(bytes.as_ref(), &content_encoding).unwrap();
         let text = String::from_utf8(decompressed)?;
+        eprintln!("[get_orchestrate] decompressed text len={}", text.len());
         Ok((
             PerformanceEntry::Resource(PerformanceResourceEntry {
                 r#type: "r".to_string(),
@@ -414,6 +438,7 @@ pub(crate) async fn initialize_solve(
         &mut self,
         path: &str,
     ) -> Result<(PerformanceEntry, Vec<u8>), anyhow::Error> {
+        eprintln!("[get_image] entry path={}", path);
         self.set_get_headers_order();
 
         let url = format!(
@@ -438,6 +463,8 @@ pub(crate) async fn initialize_solve(
             .send()
             .await?;
 
+        eprintln!("[get_image] response status={}", response.status());
+
         if response.status() != 200 {
             return Err(anyhow::anyhow!(
                 "Received invalid status code when parsing challenge image: {} {}",
@@ -456,6 +483,8 @@ pub(crate) async fn initialize_solve(
         let bytes = response.bytes().await?;
         let decompressed = decompress_body(bytes.as_ref(), &content_encoding).unwrap();
 
+        eprintln!("[get_image] success decompressed.len={}", decompressed.len());
+
         Ok((
             PerformanceEntry::Resource(PerformanceResourceEntry {
                 r#type: "r".to_string(),
@@ -473,6 +502,7 @@ pub(crate) async fn initialize_solve(
     }
 
     pub async fn get_pat(&mut self, path: &str) -> Result<PerformanceEntry, anyhow::Error> {
+        eprintln!("[get_pat] entry path={}", path);
         self.set_get_headers_order();
 
         let t = Instant::now();
@@ -494,6 +524,8 @@ pub(crate) async fn initialize_solve(
             .send()
             .await?;
 
+        eprintln!("[get_pat] response status={}", response.status());
+
         if response.status() != 401 {
             return Err(anyhow::anyhow!(
                 "Received unexpected status code when parsing PAT: {} {}",
@@ -503,6 +535,8 @@ pub(crate) async fn initialize_solve(
         }
 
         let bytes = response.bytes().await?;
+
+        eprintln!("[get_pat] success bytes.len={}", bytes.len());
 
         Ok(PerformanceEntry::Resource(PerformanceResourceEntry {
             r#type: "r".to_string(),
@@ -525,6 +559,7 @@ pub(crate) async fn initialize_solve(
         c_ray: &str,
         ch: &str,
     ) -> Result<(PerformanceEntry, String), anyhow::Error> {
+        eprintln!("[post_init_payload] entry zone={} init_arg={} c_ray={} ch={} payload_len={}", zone, init_arg, c_ray, ch, compressed_payload.len());
         self.set_post_headers_order();
 
         let url = format!(
@@ -532,6 +567,7 @@ pub(crate) async fn initialize_solve(
             zone, self.branch, init_arg, c_ray, ch,
         );
 
+        eprintln!("[post_init_payload] posting to url={}", url);
         let t = Instant::now();
         let response = self
             .client
@@ -551,6 +587,8 @@ pub(crate) async fn initialize_solve(
             .send()
             .await?;
 
+        eprintln!("[post_init_payload] response status={}", response.status());
+
         if response.status() != 200 {
             return Err(anyhow::anyhow!(
                 "Received invalid status code when sending init payload: {} {}",
@@ -567,8 +605,10 @@ pub(crate) async fn initialize_solve(
             .to_str()?
             .to_string();
         let bytes = response.bytes().await?;
+        eprintln!("[post_init_payload] bytes.len={}", bytes.len());
         let decompressed = decompress_body(bytes.as_ref(), &content_encoding).unwrap();
         let text = String::from_utf8(decompressed)?;
+        eprintln!("[post_init_payload] success text.len={}", text.len());
 
         Ok((
             PerformanceEntry::Resource(PerformanceResourceEntry {
@@ -593,6 +633,7 @@ pub(crate) async fn initialize_solve(
         chl: &str,
         c_ray: &str,
     ) -> Result<String, anyhow::Error> {
+        eprintln!("[post_payload] entry url={} payload_len={} chl={} c_ray={}", url, compressed_payload.len(), chl, c_ray);
         let parsed = Url::parse(url)?;
         self.set_post_headers_order();
 
@@ -614,6 +655,8 @@ pub(crate) async fn initialize_solve(
             .send()
             .await?;
 
+        eprintln!("[post_payload] response status={}", response.status());
+
         if response.status() != 200 {
             bail!(
                 "Received invalid status code when sending second payload: {} {}",
@@ -630,8 +673,10 @@ pub(crate) async fn initialize_solve(
             .to_str()?
             .to_string();
         let bytes = response.bytes().await?;
+        eprintln!("[post_payload] bytes.len={}", bytes.len());
         let decompressed = decompress_body(bytes.as_ref(), &content_encoding).unwrap();
         let text = String::from_utf8(decompressed)?;
+        eprintln!("[post_payload] decrypted response len={}", text.len());
 
         decrypt_cloudflare_response(c_ray, &text)
     }
@@ -757,6 +802,7 @@ fn build_client<P>(
 where
     P: EmulationProviderFactory,
 {
+    eprintln!("[build_client] building client, proxy present={}", proxy.is_some());
     let mut header_map = HeaderMap::new();
 
     header_map.insert("Accept-Language", headers.accept_language.parse()?);
@@ -789,13 +835,16 @@ where
         builder = builder.proxy(p);
     }
 
-    builder.build().map_err(|e| anyhow::anyhow!(e))
+    let client = builder.build().map_err(|e| anyhow::anyhow!(e))?;
+    eprintln!("[build_client] client built successfully");
+    Ok(client)
 }
 
 pub fn decompress_body(
     bytes: &[u8],
     encoding: &str,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    eprintln!("[decompress_body] encoding='{}' bytes.len={}", encoding, bytes.len());
     match encoding.to_lowercase().as_str() {
         "gzip" => {
             let mut decoder = flate2::read::GzDecoder::new(bytes);
