@@ -12,10 +12,9 @@ use crate::solver::utils::get_timezone_offset;
 
 #[derive(Debug, Clone)]
 pub struct BrowserKeysEntry {
-    // AJOUT DE 'pub' ICI
-    pub browser_keys_key: String,
-    pub unknown_key_1: String,
-    pub unknown_key_2: String,
+    browser_keys_key: String,
+    unknown_key_1: String,
+    unknown_key_2: String,
 }
 
 static ORIG_BROWSER_KEYS: Lazy<Map<String, Value>> = Lazy::new(|| {
@@ -25,8 +24,6 @@ static ORIG_BROWSER_KEYS: Lazy<Map<String, Value>> = Lazy::new(|| {
 
 #[async_trait]
 impl FingerprintEntryBase for BrowserKeysEntry {
-    // ... (Le reste du fichier reste identique) ...
-    // Copiez juste la fonction parse et write_entry existantes
     fn parse(
         quick_idx_map: &FxHashMap<String, usize>,
         strings: &[String],

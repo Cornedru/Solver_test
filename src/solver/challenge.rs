@@ -25,24 +25,16 @@ pub struct CloudflareChallengeOptions {
 
 impl CloudflareChallengeOptions {
     pub fn from_html(html: &str) -> Result<Self, anyhow::Error> {
-        // Amélioration : Utilisation d'une Regex pour être tolérant aux espaces
-        let start_re = Regex::new(r"window\._cf_chl_opt\s*=\s*\{").expect("Invalid regex");
+        let start_marker = "window._cf_chl_opt={";
         let end_marker = "};";
 
-        let start_match = start_re.find(html).ok_or_else(|| {
-            // DEBUG : Afficher le début du HTML reçu pour comprendre pourquoi ça échoue
-            println!("--- DEBUG HTML RECEIVED (First 500 chars) ---");
-            println!("{:.500}", html);
-            println!("---------------------------------------------");
-            anyhow!("Failed to find challenge data start marker (window._cf_chl_opt)")
-        })?;
-
-        let start = start_match.end();
-        
+        let start = html
+            .find(start_marker)
+            .ok_or_else(|| anyhow!("Failed to find challenge data start"))?
+            + start_marker.len();
         let end = html[start..]
             .find(end_marker)
             .ok_or_else(|| anyhow!("Failed to find challenge data end"))?;
-            
         let data = &html[start..start + end];
 
         fn extract_field(data: &str, key: &str) -> String {

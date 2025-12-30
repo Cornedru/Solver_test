@@ -9,8 +9,8 @@ use anyhow::{bail};
 use rand::Rng;
 use rquest::header::{HeaderMap, HeaderName, HeaderValue};
 use rquest::{Client, EmulationProviderFactory, Version};
-use rquest_util::Emulation::Chrome130; // UPDATED
-use rquest_util::EmulationOS::Linux;   // UPDATED
+use rquest_util::Emulation::Chrome136;
+use rquest_util::EmulationOS::Windows;
 use rquest_util::{EmulationOption};
 use std::io::Read;
 use std::time::{Duration, Instant};
@@ -29,25 +29,24 @@ impl TaskClient {
         referrer: String,
         headers: Headers,
     ) -> Result<TaskClient, anyhow::Error> {
-        // CORRECTION: Linux + Chrome 130
         let emulation = EmulationOption::builder()
-            .emulation(Chrome130)
-            .emulation_os(Linux)
+            .emulation(Chrome136)
+            .emulation_os(Windows)
             .build();
 
         let client = build_client(emulation, None, headers)?;
         Ok(Self {
             host: get_referrer_host(referrer.as_str())?,
             client,
-            branch: "g".to_string(), // CORRECTION: Branche "g"
+            branch: "b".to_string(),
             solve_url: None,
         })
     }
 
     pub(crate) async fn get_api(&mut self) -> Result<VersionInfo, anyhow::Error> {
-        self.branch = "g".to_string(); // CORRECTION: Branche "g"
+        self.branch = "b".to_string();
         Ok(VersionInfo {
-            branch: "g".to_string(),   // CORRECTION: Branche "g"
+            branch: "b".to_string(),
             version: "8359bcf47b68".to_string(),
         })
     }
@@ -520,8 +519,7 @@ fn generate_solve_url(branch: &str, site_key: &str) -> String {
     let feedback_param = if ENABLE_FEEDBACK { "fbE" } else { "fbD" };
 
     format!(
-        // CORRECTION: rcv -> rcv0
-        "https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/{}/turnstile/if/ov2/av0/rcv0/{}/{}/{}/{}/new/normal/{}/",
+        "https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/{}/turnstile/if/ov2/av0/rcv/{}/{}/{}/{}/new/normal/{}/",
         branch,
         generate_widget_id(),
         site_key,

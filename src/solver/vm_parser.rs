@@ -48,7 +48,6 @@ use once_cell::sync::Lazy;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::Number;
 use std::collections::{HashSet, VecDeque};
-use std::fs;
 use std::time::SystemTime;
 
 #[derive(Debug)]
@@ -62,30 +61,8 @@ pub struct VMPayloadEntryCase {
 
 impl VMPayloadEntryCase {
     pub fn generate_parse_status(&self) -> i32 {
-        // 0 = init, 1 = error/invalid, 2 = partial/warning, 3 = success
-        
-        match &self._type {
-            // CORRECTION: Utiliser les noms de champs corrects (clés obfusquées)
-            FingerprintEntry::WebGL(entry) => {
-                // On vérifie si les clés ont été extraites.
-                // Si gpu_masked_vendor_key est vide, le parsing a échoué.
-                if entry.gpu_masked_vendor_key.is_empty() || entry.gpu_masked_renderer_key.is_empty() {
-                    return 2; 
-                }
-            }
-            FingerprintEntry::BrowserKeys(entry) => {
-                 // CORRECTION: Utiliser browser_keys_key au lieu de keys
-                 if entry.browser_keys_key.is_empty() {
-                     return 2;
-                 }
-            }
-            // Le reste est inchangé
-            FingerprintEntry::EvalError(_) => return 3,
-            FingerprintEntry::SeleniumUnknown(_) => return 2,
-            
-            _ => {}
-        }
-
+        // 0 = init, 1 = collecting, 2 = collecting stage 2, 3 = success,
+        // however, it seems like that on pc none fails, so we just put success for every of them
         3
     }
 }
@@ -141,18 +118,9 @@ impl ParsedVM {
             serde_json::Value::Number(Number::from(0)),
         );
 
-        // Calcul dynamique du status
-        let status = entry.generate_parse_status();
-        
-        // Logging préventif si la qualité est faible
-        if status < 3 {
-           // On pourrait utiliser `log::warn!` ici si un logger était configuré
-           println!("WARNING: Low integrity score ({}) for entry ID: {}", status, entry.id);
-        }
-
         map.insert(
             self.fp_stage_key.clone(),
-            status.into(),
+            entry.generate_parse_status().into(),
         );
 
         let timing = entry
@@ -227,6 +195,11 @@ impl<'a> VMFingerprintParser<'a> {
                 last_entry_strings.push(s.clone());
             }
         }
+
+        // println!(
+        //     "Took {} micro-seconds to parse VM",
+        //     time.elapsed().as_micros()
+        // );
 
         Ok(ParsedVM {
             entries,
@@ -734,206 +707,234 @@ struct SignalPattern {
     entry_builder: EntryBuilderFn,
 }
 
-// --- AMÉLIORATION : Chargement dynamique des signatures ---
-static SIGNAL_STRINGS: Lazy<FxHashMap<String, Vec<String>>> = Lazy::new(|| {
-    // Essayer de charger depuis le workspace, sinon retourner une map vide
-    // En production, vous voudriez peut-être inclure un fallback JSON via include_str!
-    if let Ok(content) = fs::read_to_string("workspace/signatures.json") {
-        serde_json::from_str(&content).unwrap_or_else(|e| {
-            eprintln!("Failed to parse signatures.json: {}", e);
-            FxHashMap::default()
-        })
-    } else {
-        // Fallback silencieux ou log
-        FxHashMap::default()
-    }
-});
-
-// Helper pour matcher les signatures dynamiques avec fallback
-fn matches_signature(set: &HashSet<&str>, key: &str, defaults: &[&str]) -> bool {
-    if let Some(patterns) = SIGNAL_STRINGS.get(key) {
-        // Si configuré dans le JSON, on utilise ces valeurs
-        patterns.iter().all(|p| set.contains(p.as_str()))
-    } else {
-        // Sinon, on utilise les valeurs par défaut compilées (pour la rétrocompatibilité)
-        defaults.iter().all(|d| set.contains(d))
-    }
-}
-
 static SIGNAL_PATTERNS: Lazy<Vec<SignalPattern>> = Lazy::new(|| {
     vec![
         SignalPattern {
-            matcher: |set| matches_signature(set, "BrowserKeys", &["d.", "so.", "s."]),
+            matcher: |set| set.contains("d.") && set.contains("so.") && set.contains("s."),
             entry_builder: |m, s, v| {
                 BrowserKeysEntry::parse(m, s, v).map(FingerprintEntry::BrowserKeys)
             },
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "BrowserData", &[":navigator.hardwareConcurrency"]),
+            matcher: |set| {
+                set.iter()
+                    .any(|k| k.contains(":navigator.hardwareConcurrency"))
+            },
             entry_builder: |m, s, v| {
                 BrowserDataEntry::parse(m, s, v).map(FingerprintEntry::BrowserData)
             },
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "UserAgentData", &["userAgentData", "CLIENT_HINTS_DATA_UNDEFINED_OR_NULL"]),
+            matcher: |set| {
+                set.contains("userAgentData") && set.contains("CLIENT_HINTS_DATA_UNDEFINED_OR_NULL")
+            },
             entry_builder: |m, s, v| {
                 UserAgentDataEntry::parse(m, s, v).map(FingerprintEntry::UserAgentData)
             },
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "UserPreferencesAndBattery", &["matchMedia"]),
+            matcher: |set| set.contains("matchMedia"),
             entry_builder: |m, s, v| {
                 UserPreferencesAndBatteryEntry::parse(m, s, v)
                     .map(FingerprintEntry::UserPreferencesAndBattery)
             },
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "TamperingAndPlugins", &["__proto__", "PluginArray"]),
+            matcher: |set| set.contains("__proto__") && set.contains("PluginArray"),
             entry_builder: |m, s, v| {
                 TamperingAndPluginsEntry::parse(m, s, v).map(FingerprintEntry::TamperingAndPlugins)
             },
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "Audio", &["createOscillator"]),
+            matcher: |set| set.contains("createOscillator"),
             entry_builder: |m, s, v| AudioEntry::parse(m, s, v).map(FingerprintEntry::Audio),
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "WebGL", &["UNMASKED_VENDOR_WEBGL", "UNMASKED_RENDERER_WEBGL"]),
+            matcher: |set| {
+                set.contains("UNMASKED_VENDOR_WEBGL") && set.contains("UNMASKED_RENDERER_WEBGL")
+            },
             entry_builder: |m, s, v| WebGLEntry::parse(m, s, v).map(FingerprintEntry::WebGL),
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "DivRenderTime", &["<iframe height=0 width=0></iframe>"]),
+            matcher: |set| set.contains("<iframe height=0 width=0></iframe>"),
             entry_builder: |m, s, v| {
                 DivRenderTimeEntry::parse(m, s, v).map(FingerprintEntry::DivRenderTime)
             },
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "ComputedStyle", &["<html><head></head><body></body></html>"]),
+            matcher: |set| set.contains("<html><head></head><body></body></html>"),
             entry_builder: |m, s, v| {
                 ComputedStyleEntry::parse(m, s, v).map(FingerprintEntry::ComputedStyle)
             },
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "HTMLRender", &["getBoundingClientRect", "srcdoc", "iframe", "toJSON"]),
+            matcher: |set| {
+                set.contains("getBoundingClientRect")
+                    && set.contains("srcdoc")
+                    && set.contains("iframe")
+                    && set.contains("toJSON")
+            },
             entry_builder: |m, s, v| {
                 HTMLRenderEntry::parse(m, s, v).map(FingerprintEntry::HTMLRender)
             },
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "Image", &["/h/", "/cdn-cgi/challenge-platform", "img"]),
+            matcher: |set| {
+                set.contains("/h/")
+                    && set.contains("/cdn-cgi/challenge-platform")
+                    && set.contains("img")
+            },
             entry_builder: |m, s, v| ImageEntry::parse(m, s, v).map(FingerprintEntry::Image),
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "DocumentObjectChecks", &["links", "forms"]),
+            matcher: |set| set.contains("links") && set.contains("forms"),
             entry_builder: |m, s, v| {
                 DocumentObjectChecksEntry::parse(m, s, v)
                     .map(FingerprintEntry::DocumentObjectChecks)
             },
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "CSS", &["styleSheets"]),
+            matcher: |set| set.contains("styleSheets"),
             entry_builder: |m, s, v| CssEntry::parse(m, s, v).map(FingerprintEntry::CSS),
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "ElementParentChecks", &["insertRule", "appendData"]),
+            matcher: |set| {
+                set.contains("insertRule") || set.contains("appendData")
+                // || set.contains("insertAdjacentHTML")
+            },
             entry_builder: |m, s, v| {
                 ElementParentChecksEntry::parse(m, s, v).map(FingerprintEntry::ElementParentChecks)
             },
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "Document", &["pfp", "sL", "ssL", "tL"]),
+            matcher: |set| {
+                set.contains("pfp")
+                    && set.contains("sL")
+                    && set.contains("ssL")
+                    && set.contains("tL")
+            },
             entry_builder: |m, s, v| DocumentEntry::parse(m, s, v).map(FingerprintEntry::Document),
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "EmojiOsCheck", &["px sans-serif"]),
+            matcher: |set| set.contains("px sans-serif"),
             entry_builder: |m, s, v| {
                 EmojiOsCheckEntry::parse(m, s, v).map(FingerprintEntry::EmojiOsCheck)
             },
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "Timezone", &["getTimezoneOffset", "DateTimeFormat"]),
+            matcher: |set| set.contains("getTimezoneOffset") && set.contains("DateTimeFormat"),
             entry_builder: |m, s, v| TimezoneEntry::parse(m, s, v).map(FingerprintEntry::Timezone),
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "Language", &["eo-UA", "DateTimeFormat"]),
+            matcher: |set| set.contains("eo-UA") && set.contains("DateTimeFormat"),
             entry_builder: |m, s, v| LanguageEntry::parse(m, s, v).map(FingerprintEntry::Language),
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "Performance", &["encodedBodySize"]),
+            matcher: |set| set.contains("encodedBodySize"),
             entry_builder: |m, s, v| {
                 PerformanceEntriesEntry::parse(m, s, v).map(FingerprintEntry::Performance)
             },
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "PerformanceMemory", &["performance", "memory", "https://example.org/"]),
+            matcher: |set| {
+                set.contains("performance")
+                    && set.contains("memory")
+                    && set.contains("https://example.org/")
+            },
             entry_builder: |m, s, v| {
                 PerformanceMemoryEntry::parse(m, s, v).map(FingerprintEntry::PerformanceMemory)
             },
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "WorkerPerformanceTiming", &["postMessage", "terminate", "data", "onmessage"]),
-            // Note: Le matcher original avait une condition `any(|k| k.contains("performance.now();"))`
-            // Pour simplifier la config externe, on vérifie juste les clés principales.
+            matcher: |set| {
+                set.contains("postMessage")
+                    && set.contains("terminate")
+                    && set.contains("data")
+                    && set.contains("onmessage")
+                    && set.iter().any(|k| k.contains("performance.now();"))
+            },
             entry_builder: |m, s, v| {
                 WorkerPerformanceTimingEntry::parse(m, s, v)
                     .map(FingerprintEntry::WorkerPerformanceTiming)
             },
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "POWClick", &["the force is not strong with this one", "tangentialPressure"]),
+            matcher: |set| {
+                set.contains("the force is not strong with this one")
+                    && set.contains("tangentialPressure")
+            },
             entry_builder: |m, s, v| POWClickEntry::parse(m, s, v).map(FingerprintEntry::POWClick),
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "POW", &["the force is not strong with this one"]),
+            matcher: |set| set.contains("the force is not strong with this one"),
             entry_builder: |m, s, v| POWEntry::parse(m, s, v).map(FingerprintEntry::POW),
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "PrivateAccessToken", &["Request for the Private Access Token challenge."]),
+            matcher: |set| set.contains("Request for the Private Access Token challenge."),
             entry_builder: |m, s, v| {
                 PrivateAccessTokenEntry::parse(m, s, v).map(FingerprintEntry::PrivateAccessToken)
             },
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "SeleniumUnknown", &["COMMENT_NODE"]),
+            matcher: |set| set.contains("COMMENT_NODE"),
             entry_builder: |m, s, v| {
                 SeleniumEntry::parse(m, s, v).map(FingerprintEntry::SeleniumUnknown)
             },
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "WebGLNativeFunctionChecks", &["CanvasRenderingContext2D", "CanvasGradient"]),
+            matcher: |set| {
+                set.contains("CanvasRenderingContext2D") && set.contains("CanvasGradient")
+            },
             entry_builder: |m, s, v| {
                 WebGLNativeFunctionChecksEntry::parse(m, s, v)
                     .map(FingerprintEntry::WebGLNativeFunctionChecks)
             },
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "Math", &["SQRT1_2"]),
+            matcher: |set| set.contains("SQRT1_2"),
             entry_builder: |m, s, v| MathEntry::parse(m, s, v).map(FingerprintEntry::Math),
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "EngineBehavior", &["structuredClone"]),
+            matcher: |set| set.contains("structuredClone"),
             entry_builder: |m, s, v| {
                 EngineBehaviorEntry::parse(m, s, v).map(FingerprintEntry::EngineBehavior)
             },
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "EvalError", &["eval", "length", "throw Error"]),
+            matcher: |set| {
+                set.contains("eval")
+                    && set.contains("length")
+                    && set.iter().any(|k| k.contains("throw Error"))
+            },
             entry_builder: |m, s, v| {
                 EvalErrorEntry::parse(m, s, v).map(FingerprintEntry::EvalError)
             },
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "UnknownHashes", &["scale(1.000998)", "-10000px"]),
+            matcher: |set| set.contains("scale(1.000998)") && set.contains("-10000px"),
             entry_builder: |m, s, v| {
                 UnknownHashesEntry::parse(m, s, v).map(FingerprintEntry::UnknownHashes)
             },
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "Stack", &["replace", " ", "", "toFixed", "message"]),
+            matcher: |set| {
+                set.contains("replace")
+                    && set.contains(" ")
+                    && set.contains("")
+                    && set.contains("toFixed")
+                    && set.contains("message")
+            },
             entry_builder: |m, s, v| StackEntry::parse(m, s, v).map(FingerprintEntry::Stack),
         },
         SignalPattern {
-            matcher: |set| matches_signature(set, "StaticValue", &["eval", "this", "length", "chl-exc"]),
+            matcher: |set| {
+                // let's do this for the moment
+                set.len() < 20
+                    && set.contains("eval")
+                    && set.contains("this")
+                    && set.contains("length")
+                    && set.contains("chl-exc")
+            },
             entry_builder: |m, s, v| {
                 StaticValueEntry::parse(m, s, v).map(FingerprintEntry::StaticValue)
             },

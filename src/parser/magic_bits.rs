@@ -180,18 +180,6 @@ pub enum Opcode {
     Heap(ClosureOpcode),
 }
 
-// =========================================================================
-// NEW: Détection typée pour éviter la fragilité du comptage de tests
-// =========================================================================
-#[derive(Debug, Clone, Copy)]
-enum DetectedOpcodeType {
-    Unary,
-    Binary,
-    Literal,
-    Heap,
-    Unknown,
-}
-
 pub struct OpcodeParser<'a> {
     constants: u16,
     functions: FxHashMap<&'a str, u16>,
@@ -226,9 +214,6 @@ impl<'a> OpcodeParser<'a> {
         bits_extractor: &mut BitExtractor,
     ) {
         for operator in UnaryOperator::iter() {
-            // Safety check pour éviter le panic si le nombre de tests ne correspond pas
-            if tests_visitor.tests.is_empty() { break; }
-            
             let test = tests_visitor.tests.remove(0);
             let bits = bits_extractor.bits.drain(0..2).as_slice().to_vec();
             self.opcodes
@@ -246,17 +231,13 @@ impl<'a> OpcodeParser<'a> {
         let mut tests = FxHashMap::default();
 
         for type_ in LiteralType::iter() {
-            if tests_visitor.tests.is_empty() { break; }
-
             let test = tests_visitor.tests.remove(0);
             let bits = match type_ {
                 LiteralType::Integer
                 | LiteralType::String
                 | LiteralType::CopyState
                 | LiteralType::Array => {
-                    if !bits_extractor.bits.is_empty() {
-                         vec![bits_extractor.bits.remove(0)]
-                    } else { vec![] }
+                    vec![bits_extractor.bits.remove(0)]
                 }
                 LiteralType::Regexp => bits_extractor.bits.clone(),
                 _ => vec![],
@@ -277,21 +258,15 @@ impl<'a> OpcodeParser<'a> {
         bits_extractor: &mut BinaryBitExtractor,
     ) {
         for operator in BinaryOperator::iter() {
-            if tests_visitor.tests.is_empty() { break; }
-
             let test = tests_visitor.tests.remove(0);
-            // Ensure we have enough bits
-            let drain_len = std::cmp::min(3, bits_extractor.bits.len());
-            let bits = bits_extractor.bits.drain(0..drain_len).as_slice().to_vec();
-            
-            let swap = if !bits_extractor.swaps.is_empty() { bits_extractor.swaps.remove(0) } else { false };
+            let bits = bits_extractor.bits.drain(0..3).as_slice().to_vec();
 
             self.opcodes.insert(
                 test,
                 Opcode::Binary(BinaryOpcode {
                     bits,
                     operator,
-                    swap,
+                    swap: bits_extractor.swaps.remove(0),
                 }),
             );
         }
@@ -303,21 +278,14 @@ impl<'a> OpcodeParser<'a> {
         tests_visitor: &mut TestExtractor,
         bits_extractor: &mut BitExtractor,
     ) {
-        if bits_extractor.bits.is_empty() { return; }
         let bits = bits_extractor.bits.remove(0);
         let mut closures = FxHashMap::default();
 
         for closure in HeapType::iter() {
-            if tests_visitor.tests.is_empty() { break; }
             let test = tests_visitor.tests.remove(0);
-            
             let closure_bits = match closure {
                 HeapType::Init => vec![],
-                _ => {
-                    if !bits_extractor.bits.is_empty() {
-                        vec![bits_extractor.bits.remove(0)]
-                    } else { vec![] }
-                },
+                _ => vec![bits_extractor.bits.remove(0)],
             };
 
             closures.insert(
@@ -338,27 +306,6 @@ impl<'a> OpcodeParser<'a> {
         );
     }
 
-    // NEW: Méthode de dispatch robuste
-    fn process_by_structure(
-        &mut self,
-        opcode_register: u16,
-        detected_type: DetectedOpcodeType,
-        tests_visitor: &mut TestExtractor,
-        bits_extractor: &mut BitExtractor,
-        binary_bits_extractor: &mut BinaryBitExtractor,
-    ) {
-        match detected_type {
-            DetectedOpcodeType::Unary => self.handle_unary_opcodes(tests_visitor, bits_extractor),
-            DetectedOpcodeType::Binary => self.handle_binary_opcodes(tests_visitor, binary_bits_extractor),
-            DetectedOpcodeType::Literal => self.handle_literal_opcodes(opcode_register, tests_visitor, bits_extractor),
-            DetectedOpcodeType::Heap => self.handle_heap_opcodes(opcode_register, tests_visitor, bits_extractor),
-            DetectedOpcodeType::Unknown => {
-                // Fallback to the old count-based method if structure analysis failed
-                self.process_by_test_count(opcode_register, tests_visitor, bits_extractor, binary_bits_extractor);
-            }
-        }
-    }
-
     fn process_by_test_count(
         &mut self,
         opcode_register: u16,
@@ -369,16 +316,14 @@ impl<'a> OpcodeParser<'a> {
         match tests_visitor.tests.len() {
             5 => self.handle_unary_opcodes(tests_visitor, bits_extractor),
             12 => self.handle_literal_opcodes(opcode_register, tests_visitor, bits_extractor),
-            // Flexibilité : Accepte 18 ou plus pour Binary (au cas où CF ajoute du bruit)
-            n if n >= 18 => self.handle_binary_opcodes(tests_visitor, binary_bits_extractor),
+            18 => self.handle_binary_opcodes(tests_visitor, binary_bits_extractor),
             _ => {
                 if !tests_visitor.tests.is_empty()
                     && tests_visitor.tests.len() == HeapType::iter().count()
                 {
                     self.handle_heap_opcodes(opcode_register, tests_visitor, bits_extractor);
                 } else {
-                    // Au lieu de paniquer, on log juste une erreur pour ne pas crasher tout le processus
-                    eprintln!("Warning: Unknown opcode pattern for register {}. Tests count: {}", opcode_register, tests_visitor.tests.len());
+                    panic!("Invalid opcode: {}", opcode_register);
                 }
             }
         }
@@ -414,7 +359,6 @@ impl<'a> Visit<'a> for OpcodeParser<'a> {
             return;
         }
 
-        // Logic to detect create_function_ident (unchanged)
         if let Statement::ReturnStatement(stmt) = &body.statements.last().unwrap() {
             if let Some(Expression::ComputedMemberExpression(member_expr)) = &stmt.argument {
                 if let Statement::ExpressionStatement(expr) =
@@ -434,15 +378,7 @@ impl<'a> Visit<'a> for OpcodeParser<'a> {
             if body.statements.len() >= 2 {
                 match &body.statements[body.statements.len() - 2] {
                     Statement::ExpressionStatement(expr) => {
-                        if let Expression::ConditionalExpression(cond_expr) = &expr.expression {
-                            // --- NEW: Sémantic Analysis ---
-                            // Check the consequent to guess the type
-                            let detected_type = match &cond_expr.consequent {
-                                Expression::BinaryExpression(_) => DetectedOpcodeType::Binary,
-                                Expression::UnaryExpression(_) => DetectedOpcodeType::Unary,
-                                _ => DetectedOpcodeType::Unknown
-                            };
-
+                        if let Expression::ConditionalExpression(_) = &expr.expression {
                             let mut assigments_visitor = AssigmentExtractor::new();
                             assigments_visitor.visit_function_body(node.body.as_ref().unwrap());
 
@@ -458,10 +394,8 @@ impl<'a> Visit<'a> for OpcodeParser<'a> {
                             );
                             walk_expression(&mut binary_bits_extractor, &expr.expression);
 
-                            // Use the robust method
-                            self.process_by_structure(
+                            self.process_by_test_count(
                                 opcode_register,
-                                detected_type,
                                 &mut tests_visitor,
                                 &mut bits_extractor,
                                 &mut binary_bits_extractor,
@@ -480,23 +414,7 @@ impl<'a> Visit<'a> for OpcodeParser<'a> {
                             }
                         }
                     }
-                    Statement::IfStatement(if_stmt) => {
-                         // --- NEW: Sémantic Analysis for IfStatement ---
-                         let detected_type = if let Statement::BlockStatement(block) = &if_stmt.consequent {
-                             // Simple heuristic: if the block starts with a return or expression that looks like a binary op
-                             if let Some(Statement::ExpressionStatement(inner_expr)) = block.body.first() {
-                                 match &inner_expr.expression {
-                                     Expression::BinaryExpression(_) => DetectedOpcodeType::Binary,
-                                     Expression::UnaryExpression(_) => DetectedOpcodeType::Unary,
-                                     _ => DetectedOpcodeType::Unknown
-                                 }
-                             } else {
-                                 DetectedOpcodeType::Unknown
-                             }
-                         } else {
-                             DetectedOpcodeType::Unknown
-                         };
-
+                    Statement::IfStatement(_) => {
                         let mut assigments_visitor = AssigmentExtractor::new();
                         assigments_visitor.visit_function_body(node.body.as_ref().unwrap());
 
@@ -513,9 +431,8 @@ impl<'a> Visit<'a> for OpcodeParser<'a> {
                             BinaryBitExtractor::new(self.constants, assigments_visitor.identifiers);
                         walk_statements(&mut binary_bits_extractor, &body.statements);
 
-                        self.process_by_structure(
+                        self.process_by_test_count(
                             opcode_register,
-                            detected_type,
                             &mut tests_visitor,
                             &mut bits_extractor,
                             &mut binary_bits_extractor,
@@ -661,6 +578,27 @@ impl<'a> Visit<'a> for OpcodeParser<'a> {
                     }
                     _ => {}
                 },
+                Statement::IfStatement(_) => {
+                    let mut assigments_visitor = AssigmentExtractor::new();
+                    assigments_visitor.visit_function_body(node.body.as_ref().unwrap());
+
+                    let mut bits_extractor = BitExtractor::new(self.constants);
+                    walk_statements(&mut bits_extractor, &body.statements);
+
+                    let mut tests_visitor = TestExtractor::default();
+                    walk_statements(&mut tests_visitor, &body.statements);
+
+                    let mut binary_bits_extractor =
+                        BinaryBitExtractor::new(self.constants, assigments_visitor.identifiers);
+                    walk_statements(&mut binary_bits_extractor, &body.statements);
+
+                    self.process_by_test_count(
+                        opcode_register,
+                        &mut tests_visitor,
+                        &mut bits_extractor,
+                        &mut binary_bits_extractor,
+                    );
+                }
                 Statement::ThrowStatement(_) => {
                     let opcode = self.extract_bits_for_default_opcode(&body.statements);
                     self.opcodes.insert(opcode_register, Opcode::Throw(opcode));
