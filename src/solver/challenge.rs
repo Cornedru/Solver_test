@@ -1,7 +1,10 @@
-use anyhow::anyhow;
-use regex::Regex;
+use anyhow::{anyhow, Result};
+use oxc_allocator::Allocator;
+use oxc_ast::ast::{Expression, ObjectPropertyKind, PropertyKey};
+use oxc_parser::{Parser, ParserReturn};
+use oxc_span::SourceType;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct CloudflareChallengeOptions {
     pub c_type: String,
     pub cv_id: String,
@@ -24,57 +27,94 @@ pub struct CloudflareChallengeOptions {
 }
 
 impl CloudflareChallengeOptions {
-    pub fn from_html(html: &str) -> Result<Self, anyhow::Error> {
+    pub fn from_html(html: &str) -> Result<Self> {
         let start_marker = "window._cf_chl_opt={";
-        let end_marker = "};";
-
-        let start = html
+        // On cherche le début de l'objet mais on capture un bloc plus large pour garantir un JS valide
+        let start_idx = html
             .find(start_marker)
-            .ok_or_else(|| anyhow!("Failed to find challenge data start"))?
-            + start_marker.len();
-        let end = html[start..]
-            .find(end_marker)
-            .ok_or_else(|| anyhow!("Failed to find challenge data end"))?;
-        let data = &html[start..start + end];
-
-        fn extract_field(data: &str, key: &str) -> String {
-            let pat = format!(r#"{}\s*:\s*['"]([^'"]*)['"]"#, key);
-            Regex::new(&pat)
-                .ok()
-                .and_then(|re| re.captures(data))
-                .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
-                .unwrap_or_default()
-        }
-
-        fn get_turnstile_u(html: &str) -> String {
-            html.split("chlTimeoutMs:")
-                .nth(1)
-                .and_then(|s| s.split(',').nth(1))
-                .and_then(|raw| raw.split(['\'', '"']).nth(1))
-                .map(str::to_string)
-                .unwrap_or_default()
-        }
+            .ok_or_else(|| anyhow!("Failed to find challenge data start"))?;
         
+        // Extraction approximative du script pour le parser (jusqu'à la fin de la balise ou une longueur raisonnable)
+        let script_slice = &html[start_idx..];
+        let end_idx = script_slice.find("</script>").unwrap_or(script_slice.len());
+        let source_code = &script_slice[..end_idx];
 
-        Ok(CloudflareChallengeOptions {
-            c_type: extract_field(data, "cType"),
-            cv_id: extract_field(data, "cvId"),
-            c_arg: extract_field(data, "cFPWv"),
-            zone: extract_field(data, "cZone"),
-            api_v_id: extract_field(data, "chlApivId"),
-            widget_id: extract_field(data, "chlApiWidgetId"),
-            site_key: extract_field(data, "chlApiSitekey"),
-            api_mode: extract_field(data, "chlApiMode"),
-            api_size: extract_field(data, "chlApiSize"),
-            api_rcv: extract_field(data, "chlApiRcV"),
-            c_ray: extract_field(data, "cRay"),
-            ch: extract_field(data, "cH"),
-            md: extract_field(data, "md"),
-            time: extract_field(data, "cITimeS"),
-            iss_ua: extract_field(data, "chlIssUA"),
-            ip: extract_field(data, "chlIp"),
-            reset_src: extract_field(data, "chlApiResetSrc"),
-            turnstile_u: get_turnstile_u(html),
-        })
+        let allocator = Allocator::default();
+        let source_type = SourceType::default().with_module(false).with_typescript(false);
+        
+        let ParserReturn { program, errors, .. } = Parser::new(&allocator, source_code, source_type).parse();
+
+        if !errors.is_empty() {
+             // Fallback ou erreur si le parsing échoue drastiquement, 
+             // mais oxc est résilient. On log ou on fail.
+             // Ici on continue car on cherche juste une assignation spécifique.
+        }
+
+        let mut options = CloudflareChallengeOptions::default();
+        let mut found = false;
+
+        // Traversée de l'AST pour trouver l'assignation window._cf_chl_opt = { ... }
+        for stmt in program.body {
+            if let oxc_ast::ast::Statement::ExpressionStatement(expr_stmt) = stmt {
+                if let Expression::AssignmentExpression(assign_expr) = &expr_stmt.expression {
+                    // Vérification sommaire de la partie gauche (window._cf_chl_opt)
+                    // Pour simplifier/optimiser, on assume que c'est le premier gros objet assigné dans ce snippet
+                    // ou on vérifie strictement si nécessaire.
+                    
+                    if let Expression::ObjectExpression(obj_expr) = &assign_expr.right {
+                        found = true;
+                        for prop in &obj_expr.properties {
+                            if let ObjectPropertyKind::ObjectProperty(p) = prop {
+                                if let PropertyKey::StaticIdentifier(key) = &p.key {
+                                    if let Expression::StringLiteral(val) = &p.value {
+                                        let val_str = val.value.as_str().to_string();
+                                        match key.name.as_str() {
+                                            "cType" => options.c_type = val_str,
+                                            "cvId" => options.cv_id = val_str,
+                                            "cFPWv" => options.c_arg = val_str,
+                                            "cZone" => options.zone = val_str,
+                                            "chlApivId" => options.api_v_id = val_str,
+                                            "chlApiWidgetId" => options.widget_id = val_str,
+                                            "chlApiSitekey" => options.site_key = val_str,
+                                            "chlApiMode" => options.api_mode = val_str,
+                                            "chlApiSize" => options.api_size = val_str,
+                                            "chlApiRcV" => options.api_rcv = val_str,
+                                            "cRay" => options.c_ray = val_str,
+                                            "cH" => options.ch = val_str,
+                                            "md" => options.md = val_str,
+                                            "cITimeS" => options.time = val_str,
+                                            "chlIssUA" => options.iss_ua = val_str,
+                                            "chlIp" => options.ip = val_str,
+                                            "chlApiResetSrc" => options.reset_src = val_str,
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !found {
+            return Err(anyhow!("Could not locate _cf_chl_opt object in AST"));
+        }
+
+        // turnstile_u est souvent en dehors de l'objet principal ou calculé dynamiquement
+        // On garde une extraction légère pour ce champ spécifique s'il n'est pas dans l'AST
+        options.turnstile_u = Self::extract_turnstile_u(html).unwrap_or_default();
+
+        Ok(options)
+    }
+
+    fn extract_turnstile_u(html: &str) -> Option<String> {
+        html.split("chlTimeoutMs:")
+            .nth(1)?
+            .split(',')
+            .nth(1)?
+            .split(['\'', '"'])
+            .nth(1)
+            .map(String::from)
     }
 }
