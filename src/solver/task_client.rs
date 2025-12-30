@@ -134,6 +134,14 @@ impl TaskClient {
             .send()
             .await?;
 
+        if !response.status().is_success() {
+        bail!(
+            "Initialize solve failed with status: {} | URL: {}", 
+            response.status(), 
+            solve_url
+        );
+    }
+            
         let content_encoding = response
             .headers()
             .get("Content-Encoding")
@@ -517,9 +525,13 @@ const LANGUAGE: &str = "auto";
 
 fn generate_solve_url(branch: &str, site_key: &str) -> String {
     let feedback_param = if ENABLE_FEEDBACK { "fbE" } else { "fbD" };
-
+    
+    // Mise à jour basée sur votre log 200 OK :
+    // 1. "turnstile/if" -> "turnstile/f"
+    // 2. "rcv" -> "rch"
+    // 3. Langue déplacée en Query Parameter (?lang=...)
     format!(
-        "https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/{}/turnstile/if/ov2/av0/rcv/{}/{}/{}/{}/new/normal/{}/",
+        "https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/{}/turnstile/f/ov2/av0/rch/{}/{}/{}/{}/new/normal?lang={}",
         branch,
         generate_widget_id(),
         site_key,
