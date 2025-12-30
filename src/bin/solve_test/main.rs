@@ -13,7 +13,7 @@ async fn main() {
     let mut task = solver
         .create_task(
             "0x4AAAAAABs37s-ih7Jepz0J",
-            "https://mune.rs/",
+            "https://mune.rs",
             None,
             None,
         )

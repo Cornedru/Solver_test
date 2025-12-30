@@ -15,11 +15,11 @@ use rquest_util::{EmulationOption};
 use std::io::Read;
 use std::time::{Duration, Instant};
 use url::Url;
+use regex::Regex; 
 
 pub struct TaskClient {
     client: Client,
     host: String,
-
     branch: String,
     solve_url: Option<String>,
 }
@@ -41,6 +41,110 @@ impl TaskClient {
             branch: "b".to_string(),
             solve_url: None,
         })
+    }
+
+
+    fn extract_or_generate_ch(
+        &self,
+        solve_url: &str,
+        site_key: &str,
+        c_ray: &str,
+    ) -> Option<String> {
+        eprintln!("🔍 Attempting to extract/generate cH...");
+        
+        // Method 1: Check if cH is in the URL path
+        // Some Turnstile versions embed it as /ch/VALUE/
+        let ch_in_url = Regex::new(r"/ch/([a-zA-Z0-9_-]{20,})/").ok()
+            .and_then(|re| re.captures(solve_url))
+            .and_then(|cap| cap.get(1))
+            .map(|m| {
+                let val = m.as_str().to_string();
+                eprintln!("✅ Found cH in URL: {}", val);
+                val
+            });
+        
+        if ch_in_url.is_some() {
+            return ch_in_url;
+        }
+        
+        // Method 2: Extract widget ID from URL and use it as base
+        let widget_id = Regex::new(r"/rch/([a-z0-9]{5})/").ok()
+            .and_then(|re| re.captures(solve_url))
+            .and_then(|cap| cap.get(1))
+            .map(|m| m.as_str().to_string());
+        
+        if let Some(wid) = widget_id {
+            eprintln!("📍 Widget ID from URL: {}", wid);
+            
+            // Method 3: Generate a deterministic cH from available data
+            // This is a placeholder - the real cH is likely generated server-side
+            // We need to make an API call to get it
+            eprintln!("⚠️  cH not found in URL, need to fetch from API");
+        }
+        
+        None
+    }
+    
+    /// Make an API call to get the challenge parameters
+    /// This is typically called after the initial HTML load
+    pub(crate) async fn get_challenge_params(
+        &mut self,
+        solve_url: &str,
+        c_ray: &str,
+    ) -> Result<String, anyhow::Error> {
+        // Try to fetch challenge parameters from a known endpoint
+        // Cloudflare sometimes has an endpoint like:
+        // /cdn-cgi/challenge-platform/h/b/g/challenge/params?ray=...
+        
+        let parsed = Url::parse(solve_url)?;
+        let base = parsed.origin().ascii_serialization();
+        
+        // Try different possible endpoints
+        let endpoints = vec![
+            format!("{}/cdn-cgi/challenge-platform/h/{}/g/challenge/params?ray={}", base, self.branch, c_ray),
+            format!("{}/cdn-cgi/challenge-platform/h/{}/challenge/params?ray={}", base, self.branch, c_ray),
+        ];
+        
+        for endpoint in &endpoints {
+            eprintln!("🔍 Trying endpoint: {}", endpoint);
+            
+            match self.client.get(endpoint)
+                .header("Accept", "application/json")
+                .header("Sec-Fetch-Site", "same-origin")
+                .header("Sec-Fetch-Mode", "cors")
+                .header("Sec-Fetch-Dest", "empty")
+                .header("Referer", solve_url)
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => {
+                    let text = response.text().await?;
+                    eprintln!("✅ Got response from {}", endpoint);
+                    eprintln!("Response: {}", &text[..text.len().min(500)]);
+                    
+                    // Try to extract cH from JSON response
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                        if let Some(ch) = json.get("ch").or_else(|| json.get("cH")) {
+                            if let Some(ch_str) = ch.as_str() {
+                                return Ok(ch_str.to_string());
+                            }
+                        }
+                    }
+                    
+                    // Try regex extraction
+                    let ch_re = Regex::new(r#"["']ch["']\s*:\s*["']([^"']+)["']"#)?;
+                    if let Some(cap) = ch_re.captures(&text) {
+                        if let Some(m) = cap.get(1) {
+                            return Ok(m.as_str().to_string());
+                        }
+                    }
+                }
+                Ok(_) => eprintln!("❌ Endpoint returned non-success status"),
+                Err(e) => eprintln!("❌ Error calling endpoint: {}", e),
+            }
+        }
+        
+        Err(anyhow::anyhow!("Could not fetch cH from any endpoint"))
     }
 
     pub(crate) async fn get_api(&mut self) -> Result<VersionInfo, anyhow::Error> {
@@ -95,69 +199,164 @@ impl TaskClient {
     }
 
     pub(crate) async fn get_timezone(&mut self) -> Result<String, anyhow::Error> {
-        let response = self
-            .client
-            .get("http://icanhazip.com")
-            .header("accept-encoding", "identity")
-            .version(Version::HTTP_11)
-            .send()
-            .await?;
-
-        if response.status() != 200 {
-            bail!(
-                "received invalid status code when getting ip: {}",
-                response.status()
-            );
-        }
-
-        let text = response.text().await?.replace("\n", "");
-        get_timezone(&text)
+        // Return static timezone to avoid DNS issues
+        Ok("America/New_York".to_string())
     }
 
-    pub(crate) async fn initialize_solve(
-        &mut self,
-        site_key: &str,
-    ) -> Result<(String, String, CloudflareChallengeOptions), anyhow::Error> {
-        self.set_get_html_headers_order();
-        let solve_url = generate_solve_url(self.branch.as_str(), site_key);
+    // Replace the initialize_solve method in task_client.rs with this version:
 
-        let response = self
-            .client
-            .get(solve_url.as_str())
-            .header("Upgrade-Insecure-Requests", "1")
-            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
-            .header("Sec-Fetch-Site", "cross-site")
-            .header("Sec-Fetch-Mode", "navigate")
-            .header("Sec-Fetch-Dest", "iframe")
-            .header("Referer", &self.host)
-            .header("Priority", "u=0, i")
-            .send()
-            .await?;
+// Update your initialize_solve to continue even without cH
+// Replace the initialization in task_client.rs
 
-        if !response.status().is_success() {
+pub(crate) async fn initialize_solve(
+    &mut self,
+    site_key: &str,
+) -> Result<(String, String, CloudflareChallengeOptions), anyhow::Error> {
+    self.set_get_html_headers_order();
+    let solve_url = generate_solve_url(self.branch.as_str(), site_key);
+
+    eprintln!("🔍 Fetching: {}", solve_url);
+
+    let response = self
+        .client
+        .get(solve_url.as_str())
+        .header("Upgrade-Insecure-Requests", "1")
+        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+        .header("Sec-Fetch-Site", "cross-site")
+        .header("Sec-Fetch-Mode", "navigate")
+        .header("Sec-Fetch-Dest", "iframe")
+        .header("Referer", &self.host)
+        .header("Priority", "u=0, i")
+        .send()
+        .await?;
+
+    eprintln!("📡 Status: {}", response.status());
+
+    if !response.status().is_success() {
         bail!(
             "Initialize solve failed with status: {} | URL: {}", 
             response.status(), 
             solve_url
         );
     }
-            
-        let content_encoding = response
-            .headers()
-            .get("Content-Encoding")
-            .cloned()
-            .unwrap_or_else(|| HeaderValue::from_str("").unwrap())
-            .to_str()?
-            .to_string();
-        let bytes = response.bytes().await?;
-        let decompressed = decompress_body(bytes.as_ref(), &content_encoding).unwrap();
-        let text = String::from_utf8(decompressed)?;
+    
+    // Extract cf-ray from header FIRST
+    let cf_ray_header = response
+        .headers()
+        .get("cf-ray")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.split('-').next().unwrap_or(s).to_string());
+    
+    eprintln!("📍 CF-Ray Header: {:?}", cf_ray_header);
+    
+    let content_encoding = response
+        .headers()
+        .get("Content-Encoding")
+        .cloned()
+        .unwrap_or_else(|| HeaderValue::from_str("").unwrap())
+        .to_str()?
+        .to_string();
+        
+    let bytes = response.bytes().await?;
+    let decompressed = decompress_body(bytes.as_ref(), &content_encoding)
+        .map_err(|e| anyhow::anyhow!("Decompression failed: {}", e))?;
+    let text = String::from_utf8(decompressed)?;
 
-        let challenge = CloudflareChallengeOptions::from_html(text.as_str())?;
-        self.solve_url = Some(solve_url.clone());
-
-        Ok((solve_url, text, challenge))
+    // Save for debugging
+    #[cfg(debug_assertions)]
+    {
+        use std::fs;
+        fs::write("debug_turnstile.html", &text).ok();
+        eprintln!("💾 Saved response to debug_turnstile.html");
+        
+        // Print debug info
+        debug_html_response(&text, cf_ray_header.as_deref());
     }
+
+    // Parse the HTML
+    let mut challenge = match CloudflareChallengeOptions::from_html(text.as_str()) {
+        Ok(c) => {
+            eprintln!("✅ Parsed challenge from HTML");
+            c
+        },
+        Err(e) => {
+            eprintln!("⚠️  HTML parsing failed: {}", e);
+            // Create empty challenge, we'll fill from header
+            CloudflareChallengeOptions::default()
+        }
+    };
+
+    // CRITICAL: Use header for cRay if HTML parsing didn't find it
+    if challenge.c_ray.is_empty() {
+        if let Some(ref ray) = cf_ray_header {
+            challenge.c_ray = ray.clone();
+            eprintln!("✅ Using cRay from header: {}", ray);
+        } else {
+            return Err(anyhow::anyhow!("cRay not found in header or HTML"));
+        }
+    }
+
+    // Set zone if not found
+    if challenge.zone.is_empty() {
+        challenge.zone = "challenges.cloudflare.com".to_string();
+    }
+
+    // Try to get cH from orchestrate (but don't fail if we can't)
+    if challenge.ch.is_empty() {
+        eprintln!("⚠️  ch field is empty, attempting to get from orchestrate...");
+        
+        self.solve_url = Some(solve_url.clone());
+        
+        match self.get_orchestrate(&challenge.zone, &challenge.c_ray).await {
+            Ok((_perf, orchestrate_text)) => {
+                eprintln!("✅ Got orchestrate response");
+                
+                #[cfg(debug_assertions)]
+                {
+                    use std::fs;
+                    fs::write("debug_orchestrate.js", &orchestrate_text).ok();
+                }
+                
+                if let Ok((ch, _url)) = CloudflareChallengeOptions::extract_from_orchestrate(&orchestrate_text) {
+                    if !ch.is_empty() {
+                        challenge.ch = ch.clone();
+                        eprintln!("✅ Extracted ch from orchestrate: {}", ch);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("⚠️  Failed to get orchestrate: {}", e);
+            }
+        }
+    }
+
+    // If cH is still empty, generate a placeholder or try to extract from solve_url
+    if challenge.ch.is_empty() {
+        eprintln!("⚠️  cH is still empty - attempting to extract from URL");
+        
+        // Try to extract widget ID from URL as a fallback cH
+        let widget_id_re = Regex::new(r"/rch/([a-z0-9]{5})/").unwrap();
+        if let Some(cap) = widget_id_re.captures(&solve_url) {
+            if let Some(m) = cap.get(1) {
+                let widget_id = m.as_str();
+                // Use widget_id + cRay as a derived cH
+                // This is a workaround - the real cH should come from the server
+                challenge.ch = format!("{}-{}", widget_id, &challenge.c_ray[..8]);
+                eprintln!("⚠️  Using derived cH from widget_id: {}", challenge.ch);
+                eprintln!("⚠️  NOTE: This may not work - real cH should come from Cloudflare");
+            }
+        }
+        
+        if challenge.ch.is_empty() {
+            eprintln!("❌ Failed to get cH - challenge will likely fail");
+            eprintln!("❌ Modern Turnstile requires cH to be fetched from an API call");
+            // Don't fail here, let it continue and fail later with more context
+        }
+    }
+
+    self.solve_url = Some(solve_url.clone());
+    Ok((solve_url, text, challenge))
+}
 
     pub(crate) async fn get_orchestrate(
         &mut self,
@@ -204,7 +403,7 @@ impl TaskClient {
                 initiator_type: "script".to_string(),
                 name: url,
                 next_hop_protocol: "h2".to_string(),
-                transfer_size: bytes.len() + 300, // don't worry
+                transfer_size: bytes.len() + 300,
                 encoded_body_size: bytes.len(),
             }),
             text,
@@ -266,7 +465,7 @@ impl TaskClient {
                 initiator_type: "img".to_string(),
                 name: url,
                 next_hop_protocol: "h2".to_string(),
-                transfer_size: bytes.len() + 300, // don't worry
+                transfer_size: bytes.len() + 300,
                 encoded_body_size: bytes.len(),
             }),
             decompressed,
@@ -313,7 +512,7 @@ impl TaskClient {
             initiator_type: "fetch".to_string(),
             name: url,
             next_hop_protocol: "h2".to_string(),
-            transfer_size: bytes.len() + 300, // don't worry
+            transfer_size: bytes.len() + 300,
             encoded_body_size: bytes.len(),
         }))
     }
@@ -380,7 +579,7 @@ impl TaskClient {
                 initiator_type: "xmlhttprequest".to_string(),
                 name: url,
                 next_hop_protocol: "h2".to_string(),
-                transfer_size: bytes.len() + 300, // don't worry
+                transfer_size: bytes.len() + 300,
                 encoded_body_size: bytes.len(),
             }),
             text,
@@ -526,10 +725,6 @@ const LANGUAGE: &str = "auto";
 fn generate_solve_url(branch: &str, site_key: &str) -> String {
     let feedback_param = if ENABLE_FEEDBACK { "fbE" } else { "fbD" };
     
-    // Mise à jour basée sur votre log 200 OK :
-    // 1. "turnstile/if" -> "turnstile/f"
-    // 2. "rcv" -> "rch"
-    // 3. Langue déplacée en Query Parameter (?lang=...)
     format!(
         "https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/{}/turnstile/f/ov2/av0/rch/{}/{}/{}/{}/new/normal?lang={}",
         branch,
@@ -627,9 +822,56 @@ pub fn decompress_body(
             Ok(decoded)
         }
         "" | "identity" => {
-            // No compression
             Ok(bytes.to_vec())
         }
         other => Err(format!("Unsupported encoding: {}", other).into()),
     }
+}
+
+fn debug_html_response(html: &str, cf_ray_header: Option<&str>) {
+    eprintln!("\n=== TURNSTILE DEBUG INFO ===");
+    eprintln!("HTML Length: {} bytes", html.len());
+    
+    if let Some(ray) = cf_ray_header {
+        eprintln!("CF-Ray Header: {}", ray);
+    }
+    
+    if html.contains("_cf_chl_opt") {
+        eprintln!("✅ Found _cf_chl_opt marker");
+    } else {
+        eprintln!("❌ No _cf_chl_opt marker found");
+    }
+    
+    let script_count = html.matches("<script").count();
+    eprintln!("Script tags: {}", script_count);
+    
+    let cray_regex = Regex::new(r#"(?:cRay|c_ray)["']?\s*[:=]\s*["']?([a-f0-9]{16})"#).unwrap();
+    if let Some(cap) = cray_regex.captures(html) {
+        if let Some(m) = cap.get(1) {
+            eprintln!("✅ Found cRay in HTML: {}", m.as_str());
+        }
+    } else {
+        eprintln!("❌ No cRay found in HTML");
+    }
+    
+    let ch_regex = Regex::new(r#"(?:cH|ch)["']?\s*[:=]\s*["']?([a-zA-Z0-9_-]{20,})"#).unwrap();
+    if let Some(cap) = ch_regex.captures(html) {
+        if let Some(m) = cap.get(1) {
+            eprintln!("✅ Found ch in HTML: {}", m.as_str());
+        }
+    } else {
+        eprintln!("❌ No ch found in HTML");
+    }
+    
+    if html.contains("<iframe") {
+        eprintln!("⚠️  Response contains iframe");
+    }
+    if html.contains("window.location") || html.contains("document.location") {
+        eprintln!("⚠️  Response contains redirect JavaScript");
+    }
+    if html.contains("Checking your Browser") {
+        eprintln!("⚠️  Response is loading/challenge page");
+    }
+    
+    eprintln!("=== END DEBUG INFO ===\n");
 }
