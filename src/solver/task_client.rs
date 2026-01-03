@@ -81,7 +81,7 @@ impl TaskClient {
             // Method 3: Generate a deterministic cH from available data
             // This is a placeholder - the real cH is likely generated server-side
             // We need to make an API call to get it
-            eprintln!("⚠️  cH not found in URL, need to fetch from API");
+            eprintln!("  cH not found in URL, need to fetch from API");
         }
         
         None
@@ -144,8 +144,8 @@ impl TaskClient {
                         }
                     }
                 }
-                Ok(_) => eprintln!("[get_challenge_params] ❌ Endpoint returned non-success status: {}", endpoint),
-                Err(e) => eprintln!("[get_challenge_params] ❌ Error calling endpoint {}: {}", endpoint, e),
+                Ok(_) => eprintln!("[get_challenge_params]  Endpoint returned non-success status: {}", endpoint),
+                Err(e) => eprintln!("[get_challenge_params]  Error calling endpoint {}: {}", endpoint, e),
             }
         }
         
@@ -294,7 +294,7 @@ pub(crate) async fn initialize_solve(
             c
         },
         Err(e) => {
-            eprintln!("⚠️  HTML parsing failed: {}", e);
+            eprintln!("  HTML parsing failed: {}", e);
             // Create empty challenge, we'll fill from header
             CloudflareChallengeOptions::default()
         }
@@ -318,7 +318,7 @@ pub(crate) async fn initialize_solve(
 
     // Try to get cH from orchestrate (but don't fail if we can't)
     if challenge.ch.is_empty() {
-        eprintln!("⚠️  ch field is empty, attempting to get from orchestrate...");
+        eprintln!("  ch field is empty, attempting to get from orchestrate...");
         
         self.solve_url = Some(solve_url.clone());
         
@@ -340,14 +340,14 @@ pub(crate) async fn initialize_solve(
                 }
             }
             Err(e) => {
-                eprintln!("⚠️  Failed to get orchestrate: {}", e);
+                eprintln!("  Failed to get orchestrate: {}", e);
             }
         }
     }
 
     // If cH is still empty, generate a placeholder or try to extract from solve_url
     if challenge.ch.is_empty() {
-        eprintln!("⚠️  cH is still empty - attempting to extract from URL");
+        eprintln!("  cH is still empty - attempting to extract from URL");
         
         // Try to extract widget ID from URL as a fallback cH
         let widget_id_re = Regex::new(r"/rch/([a-z0-9]{5})/").unwrap();
@@ -357,14 +357,14 @@ pub(crate) async fn initialize_solve(
                 // Use widget_id + cRay as a derived cH
                 // This is a workaround - the real cH should come from the server
                 challenge.ch = format!("{}-{}", widget_id, &challenge.c_ray[..8]);
-                eprintln!("⚠️  Using derived cH from widget_id: {}", challenge.ch);
-                eprintln!("⚠️  NOTE: This may not work - real cH should come from Cloudflare");
+                eprintln!("  Using derived cH from widget_id: {}", challenge.ch);
+                eprintln!("  NOTE: This may not work - real cH should come from Cloudflare");
             }
         }
         
         if challenge.ch.is_empty() {
-            eprintln!("❌ Failed to get cH - challenge will likely fail");
-            eprintln!("❌ Modern Turnstile requires cH to be fetched from an API call");
+            eprintln!(" Failed to get cH - challenge will likely fail");
+            eprintln!(" Modern Turnstile requires cH to be fetched from an API call");
             // Don't fail here, let it continue and fail later with more context
         }
     }
@@ -888,7 +888,7 @@ fn debug_html_response(html: &str, cf_ray_header: Option<&str>) {
     if html.contains("_cf_chl_opt") {
         eprintln!("✅ Found _cf_chl_opt marker");
     } else {
-        eprintln!("❌ No _cf_chl_opt marker found");
+        eprintln!(" No _cf_chl_opt marker found");
     }
     
     let script_count = html.matches("<script").count();
@@ -900,7 +900,7 @@ fn debug_html_response(html: &str, cf_ray_header: Option<&str>) {
             eprintln!("✅ Found cRay in HTML: {}", m.as_str());
         }
     } else {
-        eprintln!("❌ No cRay found in HTML");
+        eprintln!(" No cRay found in HTML");
     }
     
     let ch_regex = Regex::new(r#"(?:cH|ch)["']?\s*[:=]\s*["']?([a-zA-Z0-9_-]{20,})"#).unwrap();
@@ -909,17 +909,17 @@ fn debug_html_response(html: &str, cf_ray_header: Option<&str>) {
             eprintln!("✅ Found ch in HTML: {}", m.as_str());
         }
     } else {
-        eprintln!("❌ No ch found in HTML");
+        eprintln!(" No ch found in HTML");
     }
     
     if html.contains("<iframe") {
-        eprintln!("⚠️  Response contains iframe");
+        eprintln!("  Response contains iframe");
     }
     if html.contains("window.location") || html.contains("document.location") {
-        eprintln!("⚠️  Response contains redirect JavaScript");
+        eprintln!("  Response contains redirect JavaScript");
     }
     if html.contains("Checking your Browser") {
-        eprintln!("⚠️  Response is loading/challenge page");
+        eprintln!("  Response is loading/challenge page");
     }
     
     eprintln!("=== END DEBUG INFO ===\n");

@@ -8,6 +8,7 @@ use oxc_ast_visit::{
 };
 use oxc_semantic::ScopeFlags;
 use rustc_hash::FxHashMap;
+use regex::Regex;
 
 #[derive(Default)]
 pub struct FindFunctions<'a> {
@@ -18,10 +19,18 @@ pub struct FindFunctions<'a> {
     pub function_with_opcodes: &'a str, 
     pub functions: FxHashMap<&'a str, u16>,
     pub variables: FxHashMap<&'a str, f64>,
+
+    // NEW: store candidate raw bits found on RHS for a given resolved index
+    pub index_bits: FxHashMap<u16, Vec<u16>>,
 }
 
 impl<'a> FindFunctions<'a> {
-    fn resolve_expr(&self, expr: &Expression) -> Option<f64> {
+    // NEW getter used by disassembler fallback
+    pub fn get_bits_for_index(&self, idx: u16) -> Option<&Vec<u16>> {
+        self.index_bits.get(&idx)
+    }
+
+    fn resolve_expr(&self, expr: &Expression<'a>) -> Option<f64> {
         match expr {
             Expression::NumericLiteral(lit) => Some(lit.value),
             Expression::StringLiteral(lit) => lit.value.parse::<f64>().ok(),
@@ -67,7 +76,7 @@ impl<'a> FindFunctions<'a> {
         }
     }
 
-    fn resolve_index(&self, expr: &Expression) -> Option<u16> {
+    fn resolve_index(&self, expr: &Expression<'a>) -> Option<u16> {
         if let Some(val) = self.resolve_expr(expr) { return Some(val as u16); }
         if let Expression::BinaryExpression(bin) = expr {
             let left = self.resolve_expr(&bin.left);
@@ -77,24 +86,64 @@ impl<'a> FindFunctions<'a> {
                 _ => {}
             }
         }
-        None
+        self.extract_numeric_literal(expr).map(|v| v as u16)
+    }
+
+    fn extract_numeric_literal(&self, expr: &Expression<'a>) -> Option<u64> {
+        match expr {
+            Expression::NumericLiteral(n) => Some(n.value as u64),
+            Expression::StringLiteral(s) => s.value.parse::<u64>().ok(),
+            Expression::ParenthesizedExpression(p) => self.extract_numeric_literal(&p.expression),
+            Expression::UnaryExpression(u) => self.extract_numeric_literal(&u.argument),
+            Expression::BinaryExpression(b) => {
+                self.extract_numeric_literal(&b.left)
+                    .or_else(|| self.extract_numeric_literal(&b.right))
+            }
+            Expression::SequenceExpression(seq) => seq.expressions.iter().rev().find_map(|e| self.extract_numeric_literal(e)),
+            Expression::CallExpression(call) => {
+                call.arguments.iter().find_map(|arg| arg.as_expression().and_then(|e| self.extract_numeric_literal(e)))
+            },
+            _ => {
+                match expr {
+                    Expression::ComputedMemberExpression(cm) => {
+                        self.extract_numeric_literal(&cm.expression).or_else(|| self.extract_numeric_literal(&cm.object))
+                    }
+                    Expression::StaticMemberExpression(sm) => self.extract_numeric_literal(&sm.object),
+                    _ => None
+                }
+            }
+        }
     }
 
     fn extract_function_name(&self, expr: &Expression<'a>) -> Option<&'a str> {
         match expr {
             Expression::Identifier(ident) => Some(ident.name.as_str()),
             Expression::CallExpression(call) => {
-                if !call.arguments.is_empty() {
-                    if let Some(arg) = call.arguments.first() {
-                         if let Expression::Identifier(ident) = arg.as_expression().unwrap() {
-                             return Some(ident.name.as_str());
-                         }
+                match &call.callee {
+                    Expression::Identifier(ident) => Some(ident.name.as_str()),
+                    Expression::StaticMemberExpression(mem) => {
+                        if let Expression::Identifier(obj_ident) = &mem.object {
+                            Some(obj_ident.name.as_str())
+                        } else { None }
                     }
+                    Expression::ComputedMemberExpression(mem) => {
+                        if let Expression::Identifier(obj_ident) = &mem.object {
+                            Some(obj_ident.name.as_str())
+                        } else { None }
+                    }
+                    _ => None
                 }
-                None
             },
-            Expression::SequenceExpression(seq) => seq.expressions.last().and_then(|e| self.extract_function_name(e)),
-            Expression::ParenthesizedExpression(paren) => self.extract_function_name(&paren.expression),
+            Expression::StaticMemberExpression(mem) => {
+                if let Expression::Identifier(obj_ident) = &mem.object {
+                    Some(obj_ident.name.as_str())
+                } else { None }
+            },
+            Expression::ComputedMemberExpression(mem) => {
+                if let Expression::Identifier(obj_ident) = &mem.object {
+                    Some(obj_ident.name.as_str())
+                } else { None }
+            },
             _ => None
         }
     }
@@ -102,14 +151,12 @@ impl<'a> FindFunctions<'a> {
 
 impl<'a> Visit<'a> for FindFunctions<'a> {
     fn visit_function(&mut self, node: &Function<'a>, flags: ScopeFlags) {
-        // Logique "Silver Bullet" : Anonyme ou pas, si > 50 lignes, c'est VM_ENTRY
         let mut name = node.id.as_ref().map(|id| id.name.as_str()).unwrap_or("");
         
         if let Some(body) = &node.body {
             if body.statements.len() > 50 {
                 self.is_big_function = true;
                 name = "VM_ENTRY"; 
-                // eprintln!("[INFO] VM Detected (>50 lines), forcing name 'VM_ENTRY'");
             } else {
                 self.is_big_function = false;
             }
@@ -143,29 +190,85 @@ impl<'a> Visit<'a> for FindFunctions<'a> {
             }
         }
 
-        if self.is_big_function {
-            if let AssignmentTarget::ComputedMemberExpression(member_expr) = &node.left {
-                let resolved_idx = self.resolve_index(&member_expr.expression);
+        let mut resolved_idx: Option<u16> = None;
 
-                if let Some(value) = resolved_idx {
-                    if let Some(name) = self.extract_function_name(&node.right) {
-                        self.functions.insert(name.into(), value);
-                    } else if let Expression::ArrayExpression(array_expr) = &node.right {
-                        self.constants = value;
-                        if array_expr.elements.len() > 3 {
-                            if let ArrayExpressionElement::NumericLiteral(num_lit) = &array_expr.elements[3] {
-                                self.key = num_lit.value as u16;
-                            }
-                        }
-                    } else {
-                        // MAPPING ORPHELIN -> VM_ENTRY
-                        if !self.function_with_opcodes.is_empty() {
-                            self.functions.insert(self.function_with_opcodes, value);
+        match &node.left {
+            AssignmentTarget::ComputedMemberExpression(member_expr) => {
+                resolved_idx = self.resolve_index(&member_expr.expression);
+            }
+            AssignmentTarget::StaticMemberExpression(static_expr) => {
+                let property_name = static_expr.property.name.as_str();
+                if let Ok(n) = property_name.parse::<u16>() {
+                    resolved_idx = Some(n);
+                } else {
+                    let re = Regex::new(r"\d+").unwrap();
+                    if let Some(cap) = re.captures(property_name) {
+                        if let Ok(n) = cap.get(0).unwrap().as_str().parse::<u16>() {
+                            resolved_idx = Some(n);
                         }
                     }
                 }
             }
+            _ => {}
         }
+
+        if let Some(value) = resolved_idx {
+            // store candidate raw bits when RHS is ArrayExpression (common VM opcode patterns)
+            if let Expression::ArrayExpression(array_expr) = &node.right {
+                let mut bits: Vec<u16> = Vec::new();
+                for el in &array_expr.elements {
+                    if let Some(expr) = el.as_expression() {
+                        match expr {
+                            Expression::NumericLiteral(n) => bits.push(n.value as u16),
+                            Expression::StringLiteral(s) => {
+                                if let Ok(v) = s.value.parse::<u16>() { bits.push(v); }
+                            }
+                            Expression::UnaryExpression(u) => {
+                                if let Expression::NumericLiteral(nlit) = &u.argument {
+                                    bits.push(nlit.value as u16);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if !bits.is_empty() {
+                    eprintln!("[FindFunctions] captured raw bits for index {} len={}", value, bits.len());
+                    self.index_bits.insert(value, bits);
+                }
+            }
+
+            // existing mapping logic (unchanged)...
+            if value == 195 || value == 127 {
+                eprintln!("[FindFunctions] SKIP mapping: resolved index {} looks like a key/marker (skip)", value);
+            } else if value as usize > 1000 {
+                eprintln!("[FindFunctions] SKIP mapping: resolved index {} too large (likely parse error)", value);
+            } else {
+                if let Some(name) = self.extract_function_name(&node.right) {
+                    eprintln!("[FindFunctions] mapping function '{}' -> {}", name, value);
+                    self.functions.insert(name, value);
+                } else if let Expression::ArrayExpression(array_expr) = &node.right {
+                    eprintln!("[FindFunctions] found array expression at index {}, constants={}", value, array_expr.elements.len());
+                    self.constants = value;
+                    if array_expr.elements.len() > 3 {
+                        if let Some(expr) = array_expr.elements[3].as_expression() {
+                            if let Expression::NumericLiteral(num_lit) = expr {
+                                self.key = num_lit.value as u16;
+                                eprintln!("[FindFunctions] extracted key = {}", self.key);
+                            }
+                        }
+                    }
+                } else {
+                    if !self.function_with_opcodes.is_empty() {
+                        eprintln!("[FindFunctions] orphan mapping -> {} = {}", self.function_with_opcodes, value);
+                        self.functions.insert(self.function_with_opcodes, value);
+                    } else {
+                        eprintln!("[FindFunctions] orphan assignment but no VM_ENTRY known");
+                    }
+                }
+            }
+        }
+
         walk_assignment_expression(self, node);
     }
 }

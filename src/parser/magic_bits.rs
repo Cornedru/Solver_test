@@ -594,3 +594,38 @@ impl<'a> Visit<'a> for OpcodeParser<'a> {
         walk_function(self, node, flags);
     }
 }
+
+/// Normalize raw "bits" captured from AST to remove known markers/keys
+/// Retourne un nouveau Vec<u8> et logge si la normalisation a changé la taille.
+pub fn normalize_bits(raw: &[u16]) -> Vec<u16> {
+    eprintln!("[magic_bits::normalize_bits] entry raw.len={}", raw.len());
+    let mut out = Vec::with_capacity(raw.len());
+    let mut i = 0usize;
+    while i < raw.len() {
+        // Remove repeating marker pair 195,188 sequences only
+        if i + 1 < raw.len() && raw[i] == 195 && raw[i + 1] == 188 {
+            // consume consecutive (195,188) pairs
+            while i + 1 < raw.len() && raw[i] == 195 && raw[i + 1] == 188 {
+                i += 2;
+            }
+            continue;
+        }
+        // Remove isolated 127 (separator) but keep isolated 195
+        if raw[i] == 127 {
+            i += 1;
+            continue;
+        }
+        out.push(raw[i]);
+        i += 1;
+    }
+    if out.len() != raw.len() {
+        eprintln!(
+            "[magic_bits::normalize_bits] normalized.len={} (raw.len={})",
+            out.len(),
+            raw.len()
+        );
+    } else {
+        eprintln!("[magic_bits::normalize_bits] no change after normalize");
+    }
+    out
+}

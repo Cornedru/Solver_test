@@ -1,0 +1,77 @@
+[DEBUG] Functions found: 47
+[DEBUG] Mapping: m => 96
+[DEBUG] Mapping: i8 => 0
+[DEBUG] Mapping: V => 94
+[DEBUG] Mapping: f => 107
+[DEBUG] Mapping: VM_ENTRY => 9680
+[DEBUG] Mapping: qk => 235
+[DEBUG] Mapping: N => 4
+[DEBUG] Mapping: o => 10000
+[DEBUG] Mapping: B => 224
+[DEBUG] Mapping: qh => 0
+[DEBUG] Mapping: x => 62
+[DEBUG] Mapping: J => 188
+[DEBUG] Mapping: qu => 137
+[DEBUG] Mapping: L => 20
+[DEBUG] Mapping: qZ => 246
+[DEBUG] Mapping: i => 195
+[DEBUG] Mapping: qJ => 39
+[DEBUG] Mapping: qt => 174
+[DEBUG] Mapping: j => 188
+[DEBUG] Mapping: Q => 107
+[DEBUG] Mapping: H => 34
+[DEBUG] Mapping: ey => 53234
+[DEBUG] Mapping: F => 5
+[DEBUG] Mapping: qN => 6
+[DEBUG] Mapping: s => 229
+[DEBUG] Mapping: X => 94
+[DEBUG] Mapping: qw => 71
+[DEBUG] Mapping: qz => 10
+[DEBUG] Mapping: qs => 120
+[DEBUG] Mapping: v => 200
+[DEBUG] Mapping: qR => 108
+[DEBUG] Mapping: qH => 167
+[DEBUG] Mapping: qB => 119
+[DEBUG] Mapping: qX => 195
+[DEBUG] Mapping: qv => 35
+[DEBUG] Mapping: S => 0
+[DEBUG] Mapping: qj => 247
+[DEBUG] Mapping: qV => 29
+[DEBUG] Mapping: qf => 88
+[DEBUG] Mapping: qx => 109
+[DEBUG] Mapping: qc => 192
+[DEBUG] Mapping: qL => 95
+[DEBUG] Mapping: R => 119
+[DEBUG] Mapping: Z => 142
+[DEBUG] Mapping: qF => 123
+[DEBUG] Mapping: qW => 38
+[DEBUG] Mapping: W => 197
+[DEBUG] Opcodes détectés : {151: Binary(BinaryOpcode { bits: [229, 167, 123], operator: Division, swap: false }), 170: Binary(BinaryOpcode { bits: [220, 195, 28], operator: Modulo, swap: false }), 88: SetProperty(DefaultOpcode { bits: [195, 188, 94, 195, 188, 94, 94, 195, 188, 94, 26, 188] }), 167: Throw(DefaultOpcode { bits: [61] }), 242: Unary(UnaryOpcode { bits: [94, 94], operator: Minus }), 6: SetProperty(DefaultOpcode { bits: [58, 45, 94, 195, 188, 94, 195, 188, 94, 195, 188, 29, 196, 94, 195, 188, 195, 188, 94, 195, 188, 94, 26, 39, 2, 90, 152, 116] }), 160: Binary(BinaryOpcode { bits: [12, 143, 22], operator: GreaterThan, swap: false }), 53: Binary(BinaryOpcode { bits: [107, 7, 0], operator: InstanceOf, swap: false }), 119: RegisterVMFunction(DefaultOpcode { bits: [106, 94, 195, 188, 94, 195, 188, 94, 195, 188, 26] }), 163: Binary(BinaryOpcode { bits: [190, 177, 142], operator: BitwiseOr, swap: false }), 59: Unary(UnaryOpcode { bits: [55, 178], operator: BitwiseNot }), 232: Binary(BinaryOpcode { bits: [66, 26, 187], operator: LogicalOr, swap: false }), 106: Binary(BinaryOpcode { bits: [106, 242, 77], operator: BitwiseXor, swap: false }), 235: Call(DefaultOpcode { bits: [1, 194, 177, 214, 51] }), 109: SetProperty(DefaultOpcode { bits: [84, 52, 240] }), 2: Unary(UnaryOpcode { bits: [195, 188], operator: TypeOf }), 200: Binary(BinaryOpcode { bits: [141, 196, 59], operator: GreaterThanOrEqual, swap: false }), 71: CallFuncNoContext(DefaultOpcode { bits: [140, 245, 202, 88] }), 30: Binary(BinaryOpcode { bits: [16, 38, 4], operator: RightShift, swap: false }), 9680: SetProperty(DefaultOpcode { bits: [] }), 137: Pop(DefaultOpcode { bits: [28, 1] }), 11: Binary(BinaryOpcode { bits: [54, 58, 209], operator: LeftShift, swap: false }), 231: Binary(BinaryOpcode { bits: [31, 163, 225], operator: Multiplication, swap: false }), 39: Bind(DefaultOpcode { bits: [146, 195, 188, 94, 182] }), 108: JumpIf(DefaultOpcode { bits: [105, 94, 195, 188, 94, 195, 188, 94, 195, 188, 195, 188, 94, 188, 94, 26] }), 1: Binary(BinaryOpcode { bits: [174, 45, 98], operator: Equals, swap: true }), 89: Unary(UnaryOpcode { bits: [195, 188], operator: Plus }), 174: Move(DefaultOpcode { bits: [212, 116] }), 92: Binary(BinaryOpcode { bits: [244, 223, 142], operator: BitwiseAnd, swap: false }), 246: GetProperty(DefaultOpcode { bits: [148, 222, 39, 206, 188] }), 10: GetProperty(DefaultOpcode { bits: [210, 25, 245] }), 227: Binary(BinaryOpcode { bits: [240, 47, 195], operator: Subtraction, swap: false }), 120: NewObject(DefaultOpcode { bits: [252] }), 35: SetProperty(DefaultOpcode { bits: [195, 188, 94, 94, 195, 188, 127, 223, 55, 178, 65, 92, 70, 181, 96, 161] }), 123: SetProperty(DefaultOpcode { bits: [203, 66] }), 145: Binary(BinaryOpcode { bits: [202, 117, 13], operator: UnsignedRightShift, swap: false }), 211: Binary(BinaryOpcode { bits: [32, 110, 165], operator: EqualsStrict, swap: false }), 104: Binary(BinaryOpcode { bits: [202, 95, 13], operator: LogicalAnd, swap: false }), 38: SetProperty(DefaultOpcode { bits: [94, 195, 188, 94, 195, 188, 94, 195, 188, 179, 61, 106, 240, 47, 195, 31, 163, 225, 229, 167, 123, 220, 195, 28, 202, 95, 13, 66, 26, 187, 244, 223, 142, 190, 177, 142, 106, 242, 77, 54, 58, 209, 16, 38, 4, 202, 117, 13, 174, 45, 98, 32, 110, 165, 12, 143, 22, 141, 196, 59, 107, 7, 0] }), 192: NewArray(DefaultOpcode { bits: [51] })}
+[DEBUG] Fonction m liée à un opcode non indexé : 96
+[DEBUG] Fonction i8 liée à un opcode non indexé : 0
+[DEBUG] Fonction V liée à un opcode non indexé : 94
+[DEBUG] Fonction f liée à un opcode non indexé : 107
+[DEBUG] Fonction N liée à un opcode non indexé : 4
+[DEBUG] Fonction o liée à un opcode non indexé : 10000
+[DEBUG] Fonction B liée à un opcode non indexé : 224
+[DEBUG] Fonction qh liée à un opcode non indexé : 0
+[DEBUG] Fonction x liée à un opcode non indexé : 62
+[DEBUG] Fonction J liée à un opcode non indexé : 188
+[DEBUG] Fonction L liée à un opcode non indexé : 20
+[DEBUG] Fonction i liée à un opcode non indexé : 195
+[DEBUG] Fonction j liée à un opcode non indexé : 188
+[DEBUG] Fonction Q liée à un opcode non indexé : 107
+[DEBUG] Fonction H liée à un opcode non indexé : 34
+[DEBUG] Fonction ey liée à un opcode non indexé : 53234
+[DEBUG] Fonction F liée à un opcode non indexé : 5
+[DEBUG] Fonction s liée à un opcode non indexé : 229
+[DEBUG] Fonction X liée à un opcode non indexé : 94
+[DEBUG] Fonction qX liée à un opcode non indexé : 195
+[DEBUG] Fonction S liée à un opcode non indexé : 0
+[DEBUG] Fonction qj liée à un opcode non indexé : 247
+[DEBUG] Fonction qV liée à un opcode non indexé : 29
+[DEBUG] Fonction qL liée à un opcode non indexé : 95
+[DEBUG] Fonction Z liée à un opcode non indexé : 142
+[DEBUG] Fonction W liée à un opcode non indexé : 197
+err: opcode not found: 127
+Took 8.781219823s
